@@ -23,6 +23,21 @@ export default ({ config }: ConfigContext): ExpoConfig => {
   }
 
   let result = config as ExpoConfig;
+
+  // homelab branch: self-signed builds use their own bundle id and team. Extensions derive their ids
+  // from the app's (`<id>.notifications`, `<id>.widgets`…), so this one value moves them all.
+  const ownBundleId = process.env.RAKAZO_IOS_BUNDLE_ID;
+  const ownTeamId = process.env.APPLE_TEAM_ID;
+  if (ownBundleId || ownTeamId) {
+    result = {
+      ...result,
+      ios: {
+        ...result.ios,
+        ...(ownBundleId ? { bundleIdentifier: ownBundleId } : {}),
+        ...(ownTeamId ? { appleTeamId: ownTeamId } : {}),
+      },
+    };
+  }
   const rpId = passkeyRpId(process.env.EXPO_PUBLIC_API_URL);
   if (rpId) {
     // Native passkeys only work for domains the binary is associated with, so the app reads the
