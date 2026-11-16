@@ -23,7 +23,7 @@ export default function HealthSync() {
   const styles = useThemedStyles(createStyles);
   const health = useMemo(() => healthSync(), []);
   const types = useMemo<HealthTypeInfo[]>(() => health?.types() ?? [], [health]);
-  const saved = useMemo(() => health?.getConfig() ?? null, [health]);
+  const [saved, setSaved] = useState(() => health?.getConfig() ?? null);
   const [endpoint, setEndpoint] = useState(saved?.endpoint ?? "");
   const [token, setToken] = useState("");
   const [selected, setSelected] = useState<string[]>(saved?.types ?? defaultSelection(types));
@@ -55,6 +55,7 @@ export default function HealthSync() {
     try {
       await health!.requestAuthorization(selected);
       await health!.configure(endpoint.trim(), token || null, selected);
+      setSaved(health!.getConfig());
       setToken("");
       setStatus(await health!.syncNow());
     } catch (e) {
@@ -92,7 +93,10 @@ export default function HealthSync() {
         text: "停止",
         style: "destructive",
         onPress: () => {
-          void health!.disable().then(refresh);
+          void health!.disable().then(() => {
+            setSaved(null);
+            refresh();
+          });
         },
       },
     ]);
