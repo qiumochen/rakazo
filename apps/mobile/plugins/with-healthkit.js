@@ -13,7 +13,8 @@ module.exports = function withHealthKit(config) {
     cfg.modResults.NSHealthShareUsageDescription =
       "把你选的健康数据（体重、活动、睡眠、心率、训练等）同步到你自己家里的服务器，用于体重管理和你的 Bot 做周复盘。数据不经过任何第三方。";
     // 只读；但 iOS 要求声明了 HealthKit 的 App 两个描述都在
-    cfg.modResults.NSHealthUpdateUsageDescription = "Rakazo 不会写入健康数据。";
+    cfg.modResults.NSHealthUpdateUsageDescription =
+      "Rakazo 只读取你选择同步的健康数据，不会向「健康」写入或修改任何记录。";
     return cfg;
   });
 };

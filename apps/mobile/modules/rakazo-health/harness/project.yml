@@ -1,0 +1,39 @@
+name: HealthHarness
+options:
+  bundleIdPrefix: dev.homelab.harness
+  deploymentTarget:
+    iOS: "16.4"
+targets:
+  HealthHarness:
+    type: application
+    platform: iOS
+    sources:
+      - App
+      - path: ../ios/HealthSyncEngine.swift
+      - path: ../ios/HealthTypes.swift
+    info:
+      path: App/Info.plist
+      properties:
+        UILaunchScreen: {}
+        NSHealthShareUsageDescription: "This test app reads the body weight samples it wrote so it can verify syncing to the self-hosted health service."
+        NSHealthUpdateUsageDescription: "This test app writes and deletes test body weight samples to verify the HealthKit sync engine end to end."
+        NSAppTransportSecurity: {NSAllowsArbitraryLoads: true}
+    entitlements:
+      path: App/HealthHarness.entitlements
+      properties:
+        com.apple.developer.healthkit: true
+        com.apple.developer.healthkit.background-delivery: true
+    settings:
+      CODE_SIGNING_ALLOWED: "YES"
+      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGN_STYLE: Manual
+  HealthHarnessUITests:
+    type: bundle.ui-testing
+    platform: iOS
+    sources: [UITests]
+    dependencies: [{target: HealthHarness}]
+    settings:
+      GENERATE_INFOPLIST_FILE: "YES"
+      TEST_TARGET_NAME: HealthHarness
+      CODE_SIGN_IDENTITY: "-"
+      CODE_SIGN_STYLE: Manual
