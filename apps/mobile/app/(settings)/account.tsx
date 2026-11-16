@@ -7,7 +7,7 @@ import type { Href } from "expo-router";
 import { useFocusEffect, useLocalSearchParams, useRouter } from "expo-router";
 import type { ComponentProps } from "react";
 import { useCallback, useEffect, useRef, useState } from "react";
-import { ScrollView, StyleSheet, Text, View } from "react-native";
+import { Platform, ScrollView, StyleSheet, Text, View } from "react-native";
 import { SafeAreaView } from "react-native-safe-area-context";
 import { OrganizationRowMenu } from "../../components/inbox/organization-menu";
 import { NativeActionButton } from "../../components/native/native-action-button";
@@ -323,6 +323,13 @@ export default function Account() {
             href: "/vault",
             icon: { ios: "key", android: "key-outline" },
           })}
+          {Platform.OS === "ios"
+            ? settingsLink({
+                title: "健康同步",
+                href: "/health-sync",
+                icon: { ios: "heart.text.square", android: "heart-outline" },
+              })
+            : null}
           {settingsLink({
             title: t`Computers`,
             href: "/computers",
