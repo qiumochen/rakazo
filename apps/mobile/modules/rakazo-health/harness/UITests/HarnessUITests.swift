@@ -53,4 +53,22 @@ final class HarnessUITests: XCTestCase {
     XCTAssertTrue(launch(["--delete"]).hasPrefix("deleted:"))
     XCTAssertTrue(launch(["--sync", endpoint, token]).contains("error=none"))
   }
+
+  /// 1 万条：多页（每页 4500）、预读、gzip 都走到；本轮条数要和写入的一致，请求体要比 JSON 小
+  func test6BulkPipelinedAndCompressed() {
+    XCTAssertTrue(launch(["--sync", endpoint, token]).contains("error=none"))     // 先把旧的追平
+    XCTAssertEqual(launch(["--bulk", "10000"]), "bulk:10000")
+    let r = launch(["--sync", endpoint, token])
+    XCTAssertTrue(r.contains("error=none") && r.contains("pending=0"), r)
+    let fields = Dictionary(uniqueKeysWithValues: r.split(separator: ";").compactMap { part -> (String, String)? in
+      let kv = part.split(separator: "=", maxSplits: 1)
+      return kv.count == 2 ? (String(kv[0]), String(kv[1])) : nil
+    })
+    XCTAssertEqual(Int(fields["run"] ?? ""), 10000, r)
+    let wire = Int(fields["wire"] ?? "") ?? 0, raw = Int(fields["raw"] ?? "") ?? 0
+    XCTAssertTrue(wire > 0 && wire * 3 < raw, "gzip 没起作用：\(r)")
+    XCTAssertTrue(launch(["--delete"]).hasPrefix("deleted:"))
+    let d = launch(["--sync", endpoint, token])
+    XCTAssertTrue(d.contains("error=none"), d)
+  }
 }
