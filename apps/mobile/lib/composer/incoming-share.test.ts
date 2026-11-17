@@ -17,6 +17,8 @@ vi.mock("react-native", () => ({
     },
   },
 }));
+vi.mock("expo-constants", () => ({ default: { expoConfig: { extra: {} } } }));
+
 vi.mock("expo-sharing", () => ({
   getSharedPayloads: () => state.payloads,
   clearSharedPayloads: () => {
