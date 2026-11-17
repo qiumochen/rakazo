@@ -3,10 +3,13 @@ import { Alert, ScrollView, StyleSheet, Text, TextInput } from "react-native";
 import { SettingsGroup, SettingsRow, SettingsSwitch } from "../../components/settings-group";
 import {
   defaultSelection,
+  describeProgress,
   describeStatus,
+  describeTotals,
   endpointError,
   groupTypes,
   healthSync,
+  type HealthSyncProgress,
   type HealthSyncStatus,
   type HealthTypeInfo,
 } from "../../lib/health-sync";
@@ -28,14 +31,20 @@ export default function HealthSync() {
   const [token, setToken] = useState("");
   const [selected, setSelected] = useState<string[]>(saved?.types ?? defaultSelection(types));
   const [status, setStatus] = useState<HealthSyncStatus | null>(() => health?.status() ?? null);
+  const [progress, setProgress] = useState<HealthSyncProgress | null>(() => health?.progress?.() ?? null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  const refresh = useCallback(() => setStatus(health?.status() ?? null), [health]);
+  const refresh = useCallback(() => {
+    setStatus(health?.status() ?? null);
+    setProgress(health?.progress?.() ?? null);
+  }, [health]);
+  // 同步中每秒刷新（进度条数在动），空闲时 5 秒
+  const syncing = Boolean(status?.running || progress?.running);
   useEffect(() => {
-    const timer = setInterval(refresh, 5000);
+    const timer = setInterval(refresh, syncing ? 1000 : 5000);
     return () => clearInterval(timer);
-  }, [refresh]);
+  }, [refresh, syncing]);
 
   if (!health) {
     return (
@@ -114,7 +123,11 @@ export default function HealthSync() {
       keyboardShouldPersistTaps="handled"
     >
       <SettingsGroup label="状态">
-        <SettingsRow title={status ? describeStatus(status) : "—"} detail={status ? `累计上传 ${status.uploaded} 条` : undefined} />
+        {progress?.running ? (
+          <SettingsRow title={describeProgress(progress).title} detail={describeProgress(progress).detail} />
+        ) : (
+          <SettingsRow title={status ? describeStatus(status) : "—"} detail={status ? describeTotals(status) : undefined} />
+        )}
         <SettingsRow accessibilityRole="button" title="立即同步" tinted disabled={busy || !saved} onPress={syncNow} />
       </SettingsGroup>
 

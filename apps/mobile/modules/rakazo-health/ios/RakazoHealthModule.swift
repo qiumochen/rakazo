@@ -5,6 +5,7 @@ import HealthKit
 /// the app in the background, so the observer queries have to be registered here, not from JS.
 public class RakazoHealthAppDelegate: ExpoAppDelegateSubscriber {
   public func application(_ application: UIApplication, didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+    HealthSyncEngine.shared.registerBackgroundTask()   // has to happen before launch finishes
     HealthSyncEngine.shared.start()
     return true
   }
@@ -30,6 +31,18 @@ public class RakazoHealthModule: Module {
     }
 
     Function("status") { () -> [String: Any] in Self.statusDict() }
+
+    /// Live progress of the current run; the settings screen polls it every second while syncing.
+    Function("progress") { () -> [String: Any] in
+      let p = HealthSyncEngine.shared.progress
+      var out: [String: Any] = [
+        "running": p.running, "activeTypes": p.activeTypes, "doneTypes": p.doneTypes, "typeCount": p.typeCount,
+        "uploaded": p.uploaded, "wireBytes": p.wireBytes, "rawBytes": p.rawBytes,
+        "readMs": p.readMs, "encodeMs": p.encodeMs, "postMs": p.postMs,
+      ]
+      if let d = p.startedAt { out["startedAt"] = d.timeIntervalSince1970 * 1000 }
+      return out
+    }
 
     AsyncFunction("requestAuthorization") { (types: [String], promise: Promise) in
       HealthSyncEngine.shared.requestAuthorization(types: types) { ok, error in
@@ -72,6 +85,9 @@ public class RakazoHealthModule: Module {
     if let d = s.lastSuccessAt { out["lastSuccessAt"] = d.timeIntervalSince1970 * 1000 }
     if let d = s.lastAttemptAt { out["lastAttemptAt"] = d.timeIntervalSince1970 * 1000 }
     if let e = s.lastError { out["lastError"] = e }
+    if let n = s.lastRunUploaded { out["lastRunUploaded"] = n }
+    if let t = s.lastRunSeconds { out["lastRunSeconds"] = t }
+    if s.interrupted == true { out["interrupted"] = true }
     return out
   }
 }
