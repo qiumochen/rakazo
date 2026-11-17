@@ -44,4 +44,13 @@ final class HarnessUITests: XCTestCase {
     XCTAssertTrue(launch(["--delete"]).hasPrefix("deleted:"))
     XCTAssertTrue(launch(["--sync", endpoint, token]).contains("error=none"))
   }
+
+  func test5ResetResendsHistory() {
+    XCTAssertTrue(launch(["--write", "80.5"]).hasPrefix("wrote:"))
+    XCTAssertTrue(launch(["--sync", endpoint, token]).contains("error=none"))
+    let r = launch(["--resync", endpoint, token])
+    XCTAssertTrue(r.hasPrefix("resync:resent=") && !r.hasPrefix("resync:resent=0") && r.contains("error=none"), r)
+    XCTAssertTrue(launch(["--delete"]).hasPrefix("deleted:"))
+    XCTAssertTrue(launch(["--sync", endpoint, token]).contains("error=none"))
+  }
 }

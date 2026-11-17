@@ -67,7 +67,8 @@ public class RakazoHealthModule: Module {
 
   static func statusDict() -> [String: Any] {
     let s = HealthSyncEngine.shared.status
-    var out: [String: Any] = ["pendingTypes": s.pendingTypes, "uploaded": s.uploaded]
+    var out: [String: Any] = ["pendingTypes": s.pendingTypes, "uploaded": s.uploaded,
+                              "running": HealthSyncEngine.shared.isRunning]
     if let d = s.lastSuccessAt { out["lastSuccessAt"] = d.timeIntervalSince1970 * 1000 }
     if let d = s.lastAttemptAt { out["lastAttemptAt"] = d.timeIntervalSince1970 * 1000 }
     if let e = s.lastError { out["lastError"] = e }

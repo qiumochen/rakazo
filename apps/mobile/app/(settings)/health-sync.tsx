@@ -80,6 +80,7 @@ export default function HealthSync() {
       {
         text: "重新上传",
         onPress: () => {
+          // resetAnchors 自己会启动同步；这里只等它跑完刷新状态
           void health!.resetAnchors().then(syncNow);
         },
       },

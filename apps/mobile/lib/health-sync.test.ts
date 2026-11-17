@@ -38,5 +38,6 @@ describe("health sync", () => {
     expect(describeStatus({ pendingTypes: [], uploaded: 3, lastSuccessAt: now - 5 * 60000 }, now)).toBe("5 分钟前同步");
     expect(describeStatus({ pendingTypes: ["x"], uploaded: 0 }, now)).toMatch(/解锁/);
     expect(describeStatus({ pendingTypes: [], uploaded: 0, lastError: "HTTP 401" }, now)).toMatch(/401/);
+    expect(describeStatus({ pendingTypes: [], uploaded: 0, running: true }, now)).toMatch(/正在同步/);
   });
 });
