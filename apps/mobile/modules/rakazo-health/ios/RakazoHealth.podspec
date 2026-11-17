@@ -9,7 +9,7 @@ Pod::Spec.new do |s|
   s.static_framework = true
 
   s.dependency 'ExpoModulesCore'
-  s.frameworks = 'HealthKit', 'Compression', 'BackgroundTasks'
+  s.frameworks = 'HealthKit', 'BackgroundTasks'  # Compression 是 libcompression，import 时自动链接
 
   s.pod_target_xcconfig = { 'DEFINES_MODULE' => 'YES' }
   s.source_files = '**/*.swift'
