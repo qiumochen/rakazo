@@ -1,3 +1,5 @@
+import BackgroundTasks
+import Compression
 import Foundation
 import HealthKit
 import UIKit
@@ -13,6 +15,11 @@ import UIKit
 ///   locked HealthKit is unreadable (errorDatabaseInaccessible); the type is marked pending and
 ///   synced again when protected data becomes available.
 /// - Values are converted to the unit the server expects for each type (see apps/health ingest.py).
+/// - Speed (v2, homelab docs/personal-agent/health-sync-v2.md): gzip request bodies, 4500 per batch,
+///   the next batch is read from HealthKit while the current one uploads, and two types sync at once.
+/// - Progress: an in-memory snapshot (`progress`) the settings screen polls every second.
+/// - Out of background time: stop after the current batch (saved anchors stay), end the background
+///   task, and ask BGTaskScheduler for a processing task to continue later.
 ///
 /// No dependency on Expo or React Native, so it can be compiled and tested on its own.
 // 可变状态只在 `queue` 上读写，所以手动标 Sendable。
@@ -34,6 +41,26 @@ public final class HealthSyncEngine: @unchecked Sendable {
     public var lastError: String?
     public var pendingTypes: [String] = []
     public var uploaded: Int = 0
+    /// Last run that moved data: how many and how long. Optional so status saved by v1 still decodes.
+    public var lastRunUploaded: Int?
+    public var lastRunSeconds: Double?
+    /// The last run ran out of background time; the rest continues later.
+    public var interrupted: Bool?
+  }
+
+  /// Live view of the current run (memory only).
+  public struct Progress {
+    public var running = false
+    public var startedAt: Date?
+    public var activeTypes: [String] = []
+    public var doneTypes = 0
+    public var typeCount = 0
+    public var uploaded = 0
+    public var wireBytes = 0
+    public var rawBytes = 0
+    public var readMs = 0.0
+    public var encodeMs = 0.0
+    public var postMs = 0.0
   }
 
   private let store = HKHealthStore()
@@ -43,7 +70,11 @@ public final class HealthSyncEngine: @unchecked Sendable {
   private var running = false
   private var rerun = false
   private var waiters: [() -> Void] = []
-  private let batchLimit = 2000
+  /// HealthKit query page size. The server takes at most 5000 per request; bigger pages get split.
+  private let batchLimit = 4500
+  private let serverMax = 5000
+  private let parallelTypes = 2
+  public static let backgroundTaskId = "rakazo.health.sync"
   /// Token lives in the keychain; set by the JS side.
   public var tokenProvider: () -> String? = { HealthKeychain.read() }
 
@@ -53,6 +84,12 @@ public final class HealthSyncEngine: @unchecked Sendable {
     ) { [weak self] _ in
       guard let self, !self.status.pendingTypes.isEmpty else { return }
       self.sync(reason: "unlock")
+    }
+    NotificationCenter.default.addObserver(
+      forName: UIApplication.didBecomeActiveNotification, object: nil, queue: nil
+    ) { [weak self] _ in
+      guard let self, !self.status.pendingTypes.isEmpty else { return }
+      self.sync(reason: "active")
     }
   }
 
@@ -127,6 +164,35 @@ public final class HealthSyncEngine: @unchecked Sendable {
     sync(reason: "reset")
   }
 
+  // MARK: Progress and background-time expiry (any thread)
+
+  private let progressLock = NSLock()
+  private var progressValue = Progress()
+  private var expiredValue = false
+
+  public var progress: Progress {
+    progressLock.lock(); defer { progressLock.unlock() }
+    return progressValue
+  }
+
+  private func updateProgress(_ change: (inout Progress) -> Void) {
+    progressLock.lock(); change(&progressValue); progressLock.unlock()
+  }
+
+  /// Background time is up: finish the batch in flight, then stop (see syncType).
+  public func expire() {
+    progressLock.lock(); expiredValue = true; progressLock.unlock()
+  }
+
+  private var isExpired: Bool {
+    progressLock.lock(); defer { progressLock.unlock() }
+    return expiredValue
+  }
+
+  private func clearExpired() {
+    progressLock.lock(); expiredValue = false; progressLock.unlock()
+  }
+
   /// Readable from any thread, including `queue` itself (completion callbacks run there).
   private var runningMirror = false
   public var isRunning: Bool {
@@ -195,14 +261,16 @@ public final class HealthSyncEngine: @unchecked Sendable {
 
   private func runLoop() {
     rerun = false
-    let bg = beginBackgroundTask()
+    clearExpired()
+    let bg = BackgroundTime.begin { [weak self] in self?.expire() }
     Task {
       await self.syncAllTypes()
       self.queue.async { [self] in
-        endBackgroundTask(bg)
-        if rerun {
+        bg.end()
+        if rerun && !isExpired {
           runLoop()
         } else {
+          if isExpired { scheduleContinuation() }
           setRunning(false)
           let done = waiters
           waiters = []
@@ -212,68 +280,187 @@ public final class HealthSyncEngine: @unchecked Sendable {
     }
   }
 
-  private func beginBackgroundTask() -> UIBackgroundTaskIdentifier {
-    var id = UIBackgroundTaskIdentifier.invalid
-    DispatchQueue.main.sync {
-      id = UIApplication.shared.beginBackgroundTask(withName: "rakazo.health.sync") {
-        // Out of time: the anchors that did not move simply get retried next time.
+  /// Registers the BGProcessingTask that continues an interrupted sync. Must run before launch
+  /// finishes; skipped when the Info.plist does not permit the identifier (registering would crash).
+  public func registerBackgroundTask() {
+    let permitted = Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String] ?? []
+    guard permitted.contains(Self.backgroundTaskId) else { return }
+    BGTaskScheduler.shared.register(forTaskWithIdentifier: Self.backgroundTaskId, using: nil) { [weak self] task in
+      guard let self else { return task.setTaskCompleted(success: false) }
+      task.expirationHandler = { self.expire() }
+      self.sync(reason: "bg-processing") {
+        task.setTaskCompleted(success: self.status.interrupted != true)
       }
     }
-    return id
   }
 
-  private func endBackgroundTask(_ id: UIBackgroundTaskIdentifier) {
-    guard id != .invalid else { return }
-    DispatchQueue.main.async { UIApplication.shared.endBackgroundTask(id) }
+  private func scheduleContinuation() {
+    let permitted = Bundle.main.object(forInfoDictionaryKey: "BGTaskSchedulerPermittedIdentifiers") as? [String] ?? []
+    guard permitted.contains(Self.backgroundTaskId) else { return }
+    let request = BGProcessingTaskRequest(identifier: Self.backgroundTaskId)
+    request.requiresNetworkConnectivity = true
+    request.earliestBeginDate = Date(timeIntervalSinceNow: 60)
+    try? BGTaskScheduler.shared.submit(request)
   }
 
   private func syncAllTypes() async {
     guard let config, let token = tokenProvider(), let url = Self.ingestURL(config.endpoint) else { return }
+    let types = HealthTypes.sampleTypes(for: config.enabledTypes)
+    let started = Date()
+    updateProgress { $0 = Progress(running: true, startedAt: started, typeCount: types.count) }
     var s = status
-    s.lastAttemptAt = Date()
-    var pending: [String] = []
-    var lastError: String?
-    for type in HealthTypes.sampleTypes(for: config.enabledTypes) {
-      do {
-        s.uploaded += try await syncType(type, url: url, token: token)
-      } catch let error as HKError where error.code == .errorDatabaseInaccessible {
-        pending.append(type.identifier)   // locked: try again when protected data is available
-      } catch {
-        lastError = "\(HealthTypes.label(type.identifier)): \(error.localizedDescription)"
-        pending.append(type.identifier)
+    s.lastAttemptAt = started
+    let outcome = RunOutcome()
+
+    // `parallelTypes` workers pull types off one list; a type is skipped (left pending) once time is up.
+    await withTaskGroup(of: Void.self) { group in
+      var next = 0
+      func launch() {
+        guard next < types.count else { return }
+        let type = types[next]
+        next += 1
+        group.addTask { await self.syncOne(type, url: url, token: token, outcome: outcome) }
       }
+      for _ in 0..<min(parallelTypes, types.count) { launch() }
+      while await group.next() != nil { launch() }
     }
-    s.pendingTypes = pending
-    s.lastError = lastError
-    if lastError == nil && pending.isEmpty { s.lastSuccessAt = Date() }
+
+    let result = outcome.snapshot()
+    s.uploaded += result.uploaded
+    s.pendingTypes = types.map(\.identifier).filter(result.pending.contains)
+    s.lastError = result.error
+    s.interrupted = result.interrupted
+    if result.uploaded > 0 {
+      s.lastRunUploaded = result.uploaded
+      s.lastRunSeconds = Date().timeIntervalSince(started)
+    }
+    if result.error == nil && result.pending.isEmpty { s.lastSuccessAt = Date() }
     status = s
+    updateProgress { $0.running = false; $0.activeTypes = [] }
   }
 
-  /// Pages through one type until HealthKit has nothing newer than the stored anchor.
+  private func syncOne(_ type: HKSampleType, url: URL, token: String, outcome: RunOutcome) async {
+    let id = type.identifier
+    if isExpired {
+      outcome.pend(id, interrupted: true)
+      return
+    }
+    let label = HealthTypes.label(id)
+    updateProgress { $0.activeTypes.append(label) }
+    do {
+      outcome.add(try await syncType(type, url: url, token: token))
+    } catch is SyncInterrupted {
+      outcome.pend(id, interrupted: true)
+    } catch let error as HKError where error.code == .errorDatabaseInaccessible {
+      outcome.pend(id)   // locked: try again when protected data is available
+    } catch {
+      outcome.fail(id, "\(label): \(error.localizedDescription)")
+    }
+    updateProgress {
+      if let i = $0.activeTypes.firstIndex(of: label) { $0.activeTypes.remove(at: i) }
+      $0.doneTypes += 1
+    }
+  }
+
+  private struct Fetched {
+    let samples: [HKSample]
+    let deleted: [HKDeletedObject]
+    let anchor: HKQueryAnchor?
+    var count: Int { samples.count + deleted.count }
+  }
+
+  private func fetch(_ type: HKSampleType, from anchor: HKQueryAnchor?) async throws -> Fetched {
+    let t0 = Date()
+    let (samples, deleted, newAnchor) = try await anchoredQuery(type, from: anchor)
+    let ms = Date().timeIntervalSince(t0) * 1000
+    updateProgress { $0.readMs += ms }
+    return Fetched(samples: samples, deleted: deleted, anchor: newAnchor)
+  }
+
+  /// Pages through one type until HealthKit has nothing newer than the stored anchor. While page N
+  /// uploads, page N+1 is already being read; page N's anchor is saved only after the server has it.
   private func syncType(_ type: HKSampleType, url: URL, token: String) async throws -> Int {
+    let id = type.identifier
     var total = 0
+    var gen = currentGeneration
+    var current = try await fetch(type, from: anchor(for: id))
     while true {
-      let gen = currentGeneration
-      let (samples, deleted, newAnchor) = try await anchoredQuery(type, from: anchor(for: type.identifier))
-      if samples.isEmpty && deleted.isEmpty {
-        saveAnchorIfCurrent(newAnchor, for: type.identifier, generation: gen)
+      if current.count == 0 {
+        saveAnchorIfCurrent(current.anchor, for: id, generation: gen)
         return total
       }
-      var batch = HealthPayload.Batch(device: UIDeviceName.current)
-      for sample in samples {
-        if let workout = sample as? HKWorkout {
-          batch.workouts.append(HealthPayload.workout(workout))
-        } else if let item = HealthPayload.sample(sample) {
-          batch.samples.append(item)
-        }
+      if isExpired { throw SyncInterrupted() }
+      let more = current.count >= batchLimit
+      let prefetch: Task<Fetched, Error>? = more
+        ? Task { [anchor = current.anchor] in try await self.fetch(type, from: anchor) } : nil
+      do {
+        for body in try encode(current, type: id) { try await post(body, to: url, token: token) }
+      } catch {
+        prefetch?.cancel()
+        throw error
       }
-      batch.deleted = deleted.map { HealthPayload.Deleted(uuid: $0.uuid.uuidString, type: type.identifier) }
-      try await post(batch, to: url, token: token)
-      // only after the server has it, and only if nobody reset the anchors meanwhile
-      guard saveAnchorIfCurrent(newAnchor, for: type.identifier, generation: gen) else { continue }
-      total += samples.count + deleted.count
-      if samples.count + deleted.count < batchLimit { return total }
+      updateProgress { $0.uploaded += current.count }
+      // only if nobody reset the anchors meanwhile; otherwise start this type over from scratch
+      guard saveAnchorIfCurrent(current.anchor, for: id, generation: gen) else {
+        prefetch?.cancel()
+        gen = currentGeneration
+        current = try await fetch(type, from: anchor(for: id))
+        continue
+      }
+      total += current.count
+      guard let prefetch else { return total }
+      current = try await prefetch.value
     }
+  }
+
+  /// One page → request bodies of at most `serverMax` items each (gzipped when that helps).
+  private func encode(_ page: Fetched, type: String) throws -> [Body] {
+    let t0 = Date()
+    let device = UIDeviceName.current
+    var batches: [HealthPayload.Batch] = []
+    var batch = HealthPayload.Batch(device: device)
+    var size = 0
+    func add(_ change: (inout HealthPayload.Batch) -> Void) {
+      if size == serverMax {
+        batches.append(batch)
+        batch = HealthPayload.Batch(device: device)
+        size = 0
+      }
+      change(&batch)
+      size += 1
+    }
+    for sample in page.samples {
+      if let workout = sample as? HKWorkout {
+        add { $0.workouts.append(HealthPayload.workout(workout)) }
+      } else if let item = HealthPayload.sample(sample) {
+        add { $0.samples.append(item) }
+      }
+    }
+    for d in page.deleted { add { $0.deleted.append(HealthPayload.Deleted(uuid: d.uuid.uuidString, type: type)) } }
+    if size > 0 { batches.append(batch) }
+
+    var bodies: [Body] = []
+    for b in batches {
+      let json = try JSONEncoder().encode(b)
+      let t1 = Date()
+      let gz = Gzip.compress(json)
+      let gzipMs = Date().timeIntervalSince(t1) * 1000
+      bodies.append(Body(data: gz ?? json, gzipped: gz != nil, rawBytes: json.count,
+                         timing: String(format: "n=%d;gzip=%.0f", b.samples.count + b.workouts.count + b.deleted.count, gzipMs)))
+    }
+    let ms = Date().timeIntervalSince(t0) * 1000
+    updateProgress { p in
+      p.encodeMs += ms
+      p.rawBytes += bodies.reduce(0) { $0 + $1.rawBytes }
+    }
+    return bodies
+  }
+
+  private struct Body {
+    let data: Data
+    let gzipped: Bool
+    let rawBytes: Int
+    let timing: String
   }
 
   private func anchoredQuery(_ type: HKSampleType, from anchor: HKQueryAnchor?) async throws
@@ -292,13 +479,20 @@ public final class HealthSyncEngine: @unchecked Sendable {
     }
   }
 
-  private func post(_ batch: HealthPayload.Batch, to url: URL, token: String) async throws {
-    var req = URLRequest(url: url, timeoutInterval: 60)
+  private func post(_ body: Body, to url: URL, token: String) async throws {
+    var req = URLRequest(url: url, timeoutInterval: 120)
     req.httpMethod = "POST"
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
+    if body.gzipped { req.setValue("gzip", forHTTPHeaderField: "Content-Encoding") }
     req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
-    req.httpBody = try JSONEncoder().encode(batch)
+    let p = progress
+    req.setValue(String(format: "%@;read=%.0f;encode=%.0f", body.timing, p.readMs, p.encodeMs),
+                 forHTTPHeaderField: "X-Health-Timing")
+    req.httpBody = body.data
+    let t0 = Date()
     let (data, response) = try await URLSession.shared.data(for: req)
+    let ms = Date().timeIntervalSince(t0) * 1000
+    updateProgress { $0.postMs += ms; $0.wireBytes += body.data.count }
     let code = (response as? HTTPURLResponse)?.statusCode ?? 0
     guard (200..<300).contains(code) else {
       let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
@@ -322,6 +516,96 @@ public enum HealthSyncError: LocalizedError {
     switch self {
     case let .server(code, detail): return "HTTP \(code)\(detail.isEmpty ? "" : " \(detail)")"
     }
+  }
+}
+
+struct SyncInterrupted: Error {}
+
+/// What one run achieved, collected from the parallel type workers.
+final class RunOutcome: @unchecked Sendable {
+  struct Snapshot {
+    var uploaded = 0
+    var pending: Set<String> = []
+    var error: String?
+    var interrupted = false
+  }
+  private let lock = NSLock()
+  private var value = Snapshot()
+  func add(_ n: Int) { lock.lock(); value.uploaded += n; lock.unlock() }
+  func pend(_ id: String, interrupted: Bool = false) {
+    lock.lock(); value.pending.insert(id); if interrupted { value.interrupted = true }; lock.unlock()
+  }
+  func fail(_ id: String, _ message: String) {
+    lock.lock(); value.pending.insert(id); value.error = value.error ?? message; lock.unlock()
+  }
+  func snapshot() -> Snapshot { lock.lock(); defer { lock.unlock() }; return value }
+}
+
+/// UIApplication background time for one run. iOS kills an app that does not end its task when the
+/// time runs out, so the expiration handler ends it right away (after telling the engine to stop).
+final class BackgroundTime: @unchecked Sendable {
+  private let lock = NSLock()
+  private var id = UIBackgroundTaskIdentifier.invalid
+
+  static func begin(onExpire: @escaping () -> Void) -> BackgroundTime {
+    let token = BackgroundTime()
+    let start = {
+      token.id = UIApplication.shared.beginBackgroundTask(withName: "rakazo.health.sync") {
+        onExpire()
+        token.end()
+      }
+    }
+    if Thread.isMainThread { start() } else { DispatchQueue.main.sync(execute: start) }
+    return token
+  }
+
+  func end() {
+    lock.lock()
+    let current = id
+    id = .invalid
+    lock.unlock()
+    guard current != .invalid else { return }
+    DispatchQueue.main.async { UIApplication.shared.endBackgroundTask(current) }
+  }
+}
+
+/// gzip (RFC 1952) around the Compression framework's raw DEFLATE. Returns nil when it does not help.
+enum Gzip {
+  static func compress(_ input: Data) -> Data? {
+    guard input.count > 512 else { return nil }
+    let capacity = input.count + input.count / 8 + 1024
+    var deflated = Data(count: capacity)
+    let written = deflated.withUnsafeMutableBytes { (dst: UnsafeMutableRawBufferPointer) -> Int in
+      input.withUnsafeBytes { (src: UnsafeRawBufferPointer) -> Int in
+        compression_encode_buffer(
+          dst.bindMemory(to: UInt8.self).baseAddress!, capacity,
+          src.bindMemory(to: UInt8.self).baseAddress!, input.count, nil, COMPRESSION_ZLIB)
+      }
+    }
+    guard written > 0, written < input.count else { return nil }
+    var out = Data([0x1f, 0x8b, 0x08, 0, 0, 0, 0, 0, 0, 0x03])
+    out.append(deflated.prefix(written))
+    var crc = crc32(input).littleEndian
+    var size = UInt32(truncatingIfNeeded: input.count).littleEndian
+    withUnsafeBytes(of: &crc) { out.append(contentsOf: $0) }
+    withUnsafeBytes(of: &size) { out.append(contentsOf: $0) }
+    return out
+  }
+
+  private static let table: [UInt32] = (0..<256).map { i -> UInt32 in
+    var c = UInt32(i)
+    for _ in 0..<8 { c = (c & 1) != 0 ? 0xEDB8_8320 ^ (c >> 1) : c >> 1 }
+    return c
+  }
+
+  static func crc32(_ data: Data) -> UInt32 {
+    var c: UInt32 = 0xFFFF_FFFF
+    table.withUnsafeBufferPointer { t in
+      data.withUnsafeBytes { (bytes: UnsafeRawBufferPointer) in
+        for b in bytes { c = t[Int((c ^ UInt32(b)) & 0xFF)] ^ (c >> 8) }
+      }
+    }
+    return c ^ 0xFFFF_FFFF
   }
 }
 

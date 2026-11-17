@@ -15,6 +15,13 @@ module.exports = function withHealthKit(config) {
     // 只读；但 iOS 要求声明了 HealthKit 的 App 两个描述都在
     cfg.modResults.NSHealthUpdateUsageDescription =
       "Rakazo 只读取你选择同步的健康数据，不会向「健康」写入或修改任何记录。";
+    // 后台时间用完没传完时，交给 BGTaskScheduler 找时机续传（HealthSyncEngine.backgroundTaskId）
+    const modes = new Set(cfg.modResults.UIBackgroundModes ?? []);
+    modes.add("processing");
+    cfg.modResults.UIBackgroundModes = [...modes];
+    const ids = new Set(cfg.modResults.BGTaskSchedulerPermittedIdentifiers ?? []);
+    ids.add("rakazo.health.sync");
+    cfg.modResults.BGTaskSchedulerPermittedIdentifiers = [...ids];
     return cfg;
   });
 };
