@@ -39,6 +39,16 @@ func run(_ args: [String]) async -> String {
       }
       return "deleted:\(n)"
     }
+    if let i = args.firstIndex(of: "--resync") {
+      // 重新上传全部历史：重置锚点（它自己会启动同步），等同步跑完
+      HealthKeychain.write(args[i + 2])
+      HealthSyncEngine.shared.config = .init(endpoint: args[i + 1], enabledTypes: [HKQuantityTypeIdentifier.bodyMass.rawValue])
+      let before = HealthSyncEngine.shared.status.uploaded
+      HealthSyncEngine.shared.resetAnchors()
+      await withCheckedContinuation { c in HealthSyncEngine.shared.sync(reason: "harness") { c.resume() } }
+      let s = HealthSyncEngine.shared.status
+      return "resync:resent=\(s.uploaded - before);error=\(s.lastError ?? "none")"
+    }
     if let i = args.firstIndex(of: "--sync") {
       HealthKeychain.write(args[i + 2])
       HealthSyncEngine.shared.config = .init(endpoint: args[i + 1], enabledTypes: [HKQuantityTypeIdentifier.bodyMass.rawValue])

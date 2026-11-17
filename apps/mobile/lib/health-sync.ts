@@ -21,6 +21,8 @@ export type HealthSyncStatus = {
   lastError?: string;
   pendingTypes: string[];
   uploaded: number;
+  /** Missing on builds before the flag existed. */
+  running?: boolean;
 };
 
 type HealthModule = {
@@ -70,6 +72,7 @@ export function endpointError(endpoint: string): string | null {
 }
 
 export function describeStatus(status: HealthSyncStatus, now = Date.now()): string {
+  if (status.running) return "正在同步…（首次或重新上传会传全部历史，可能要十几分钟，别切走或锁屏）";
   if (status.lastError) return `上次失败：${status.lastError}`;
   if (status.pendingTypes.length) return `${status.pendingTypes.length} 类等手机解锁后补传`;
   if (!status.lastSuccessAt) return "还没同步过";

@@ -93,6 +93,15 @@ public final class HealthSyncEngine: @unchecked Sendable {
     return try? NSKeyedUnarchiver.unarchivedObject(ofClass: HKQueryAnchor.self, from: data)
   }
 
+  /// Saves unless a reset happened since `generation` was read; returns whether it saved.
+  @discardableResult
+  private func saveAnchorIfCurrent(_ anchor: HKQueryAnchor?, for id: String, generation gen: Int) -> Bool {
+    generationLock.lock(); defer { generationLock.unlock() }
+    guard gen == generation else { return false }
+    saveAnchor(anchor, for: id)
+    return true
+  }
+
   private func saveAnchor(_ anchor: HKQueryAnchor?, for id: String) {
     guard let anchor,
       let data = try? NSKeyedArchiver.archivedData(withRootObject: anchor, requiringSecureCoding: true)
@@ -100,9 +109,34 @@ public final class HealthSyncEngine: @unchecked Sendable {
     defaults.set(data, forKey: anchorKey(id))
   }
 
-  /// Forget every anchor: the next sync re-sends all history (the server dedupes by UUID).
+  /// Bumped by resetAnchors(). A sync that started before a reset must not write its (old) anchors
+  /// back afterwards: it checks the generation before every save and starts over instead.
+  private let generationLock = NSLock()
+  private var generation = 0
+  private var currentGeneration: Int {
+    generationLock.lock(); defer { generationLock.unlock() }
+    return generation
+  }
+
+  /// Forget every anchor and re-send all history (the server dedupes by UUID). Safe while a sync runs.
   public func resetAnchors() {
+    generationLock.lock()
+    generation += 1
     for id in HealthTypes.all.map(\.id) { defaults.removeObject(forKey: anchorKey(id)) }
+    generationLock.unlock()
+    sync(reason: "reset")
+  }
+
+  /// Readable from any thread, including `queue` itself (completion callbacks run there).
+  private var runningMirror = false
+  public var isRunning: Bool {
+    generationLock.lock(); defer { generationLock.unlock() }
+    return runningMirror
+  }
+
+  private func setRunning(_ value: Bool) {
+    running = value
+    generationLock.lock(); runningMirror = value; generationLock.unlock()
   }
 
   // MARK: Authorization and background delivery
@@ -154,7 +188,7 @@ public final class HealthSyncEngine: @unchecked Sendable {
         rerun = true
         return
       }
-      running = true
+      setRunning(true)
       runLoop()
     }
   }
@@ -169,7 +203,7 @@ public final class HealthSyncEngine: @unchecked Sendable {
         if rerun {
           runLoop()
         } else {
-          running = false
+          setRunning(false)
           let done = waiters
           waiters = []
           done.forEach { $0() }
@@ -219,9 +253,10 @@ public final class HealthSyncEngine: @unchecked Sendable {
   private func syncType(_ type: HKSampleType, url: URL, token: String) async throws -> Int {
     var total = 0
     while true {
+      let gen = currentGeneration
       let (samples, deleted, newAnchor) = try await anchoredQuery(type, from: anchor(for: type.identifier))
       if samples.isEmpty && deleted.isEmpty {
-        saveAnchor(newAnchor, for: type.identifier)
+        saveAnchorIfCurrent(newAnchor, for: type.identifier, generation: gen)
         return total
       }
       var batch = HealthPayload.Batch(device: UIDeviceName.current)
@@ -234,7 +269,8 @@ public final class HealthSyncEngine: @unchecked Sendable {
       }
       batch.deleted = deleted.map { HealthPayload.Deleted(uuid: $0.uuid.uuidString, type: type.identifier) }
       try await post(batch, to: url, token: token)
-      saveAnchor(newAnchor, for: type.identifier)   // only after the server has it
+      // only after the server has it, and only if nobody reset the anchors meanwhile
+      guard saveAnchorIfCurrent(newAnchor, for: type.identifier, generation: gen) else { continue }
       total += samples.count + deleted.count
       if samples.count + deleted.count < batchLimit { return total }
     }
