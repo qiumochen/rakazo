@@ -9,6 +9,7 @@ import {
   describeStatus,
   describeTotals,
   endpointError,
+  needsAccessHeaders,
   formatDuration,
   groupTypes,
   healthSync,
@@ -37,8 +38,12 @@ describe("health sync", () => {
   it("only accepts an https origin", () => {
     expect(endpointError("https://mac.example.ts.net:8444")).toBeNull();
     expect(endpointError("http://mac.example.ts.net:8444")).toMatch(/https/);
-    expect(endpointError("https://mac.example.ts.net:8444/ingest")).toMatch(/路径/);
+    expect(endpointError("https://mac.example.ts.net:8444/ingest")).toMatch(/\/health 为止/);
+    expect(endpointError("https://homelab.example.xyz/health")).toBeNull();
+    expect(endpointError("https://homelab.example.xyz/health?x=1")).toMatch(/\?/);
     expect(endpointError("mac")).toMatch(/完整地址/);
+    expect(needsAccessHeaders("https://homelab.example.xyz/health")).toBe(true);
+    expect(needsAccessHeaders("https://mac.example.ts.net:8444")).toBe(false);
   });
 
   it("describes the sync state", () => {

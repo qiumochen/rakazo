@@ -485,18 +485,27 @@ public final class HealthSyncEngine: @unchecked Sendable {
     req.setValue("application/json", forHTTPHeaderField: "Content-Type")
     if body.gzipped { req.setValue("gzip", forHTTPHeaderField: "Content-Encoding") }
     req.setValue("Bearer \(token)", forHTTPHeaderField: "Authorization")
+    // Cloudflare Access 的服务令牌（不挂 Tailscale、走 homelab.0458001.xyz 时要）。只发给这个地址。
+    for (name, value) in HealthAccessHeaders.read() where !name.isEmpty {
+      req.setValue(value, forHTTPHeaderField: name)
+    }
     let p = progress
     req.setValue(String(format: "%@;read=%.0f;encode=%.0f", body.timing, p.readMs, p.encodeMs),
                  forHTTPHeaderField: "X-Health-Timing")
     req.httpBody = body.data
     let t0 = Date()
-    let (data, response) = try await URLSession.shared.data(for: req)
+    // 不跟随重定向：令牌不对时 Access 会 302 到登录页，跟过去拿到的是 200 的 HTML——当成成功就会前移锚点、丢数据
+    let (data, response) = try await URLSession.shared.data(for: req, delegate: NoRedirect.shared)
     let ms = Date().timeIntervalSince(t0) * 1000
     updateProgress { $0.postMs += ms; $0.wireBytes += body.data.count }
     let code = (response as? HTTPURLResponse)?.statusCode ?? 0
+    let json = (try? JSONSerialization.jsonObject(with: data)) as? [String: Any]
     guard (200..<300).contains(code) else {
-      let detail = (try? JSONSerialization.jsonObject(with: data) as? [String: Any])?["detail"] as? String
-      throw HealthSyncError.server(code, detail ?? "")
+      throw HealthSyncError.server(code, json?["detail"] as? String ?? (code == 302 ? "被登录页拦了（Access 凭据不对？）" : ""))
+    }
+    // 2xx 也要是健康服务自己的回执，别的（代理、登录页）一律不算数
+    guard json?["ok"] as? Bool == true else {
+      throw HealthSyncError.server(code, "回应不是健康服务的（中间有代理或登录页？）")
     }
   }
 
@@ -621,12 +630,45 @@ enum UIDeviceName {
   }
 }
 
+/// Refuses every redirect, so a login page never passes for the ingest service.
+final class NoRedirect: NSObject, URLSessionTaskDelegate {
+  static let shared = NoRedirect()
+  func urlSession(_ session: URLSession, task: URLSessionTask, willPerformHTTPRedirection response: HTTPURLResponse,
+                  newRequest request: URLRequest, completionHandler: @escaping (URLRequest?) -> Void) {
+    completionHandler(nil)
+  }
+}
+
+/// Extra request headers (Cloudflare Access service token), kept in the keychain next to the token.
+public enum HealthAccessHeaders {
+  private static let account = "access-headers"
+
+  public static func read() -> [String: String] {
+    guard let text = HealthKeychain.read(account: account), let data = text.data(using: .utf8),
+          let dict = try? JSONSerialization.jsonObject(with: data) as? [String: String] else { return [:] }
+    return dict
+  }
+
+  /// Empty or nil removes them.
+  public static func write(_ headers: [String: String]?) {
+    guard let headers, !headers.isEmpty, let data = try? JSONSerialization.data(withJSONObject: headers),
+          let text = String(data: data, encoding: .utf8) else {
+      HealthKeychain.write(nil, account: account)
+      return
+    }
+    HealthKeychain.write(text, account: account)
+  }
+}
+
 /// Token storage (keychain, this device only, readable after first unlock so background delivery works).
 public enum HealthKeychain {
   private static let service = "rakazo.health"
-  private static let account = "ingest-token"
+  private static let tokenAccount = "ingest-token"
 
-  public static func read() -> String? {
+  public static func read() -> String? { read(account: tokenAccount) }
+  public static func write(_ token: String?) { write(token, account: tokenAccount) }
+
+  static func read(account: String) -> String? {
     let query: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
       kSecAttrAccount as String: account, kSecReturnData as String: true,
@@ -636,7 +678,7 @@ public enum HealthKeychain {
     return String(data: data, encoding: .utf8)
   }
 
-  public static func write(_ token: String?) {
+  static func write(_ token: String?, account: String) {
     let base: [String: Any] = [
       kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
       kSecAttrAccount as String: account,

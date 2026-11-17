@@ -9,12 +9,15 @@ import {
   endpointError,
   groupTypes,
   healthSync,
+  needsAccessHeaders,
   type HealthSyncProgress,
   type HealthSyncStatus,
   type HealthTypeInfo,
 } from "../../lib/health-sync";
+import { currentApiBase } from "../../lib/api";
 import { mobileTokens } from "../../lib/appearance";
 import { native, useThemedStyles } from "../../lib/native";
+import { serverHeaders } from "../../lib/server-headers";
 import { useSideInsets } from "../../lib/side-insets";
 
 /**
@@ -29,6 +32,12 @@ export default function HealthSync() {
   const [saved, setSaved] = useState(() => health?.getConfig() ?? null);
   const [endpoint, setEndpoint] = useState(saved?.endpoint ?? "");
   const [token, setToken] = useState("");
+  // 不挂 Tailscale 时走 Cloudflare Access：直接用 Rakazo 服务器那份 Server → Headers（同一个服务令牌）
+  const rakazoHeaders = useMemo(() => serverHeaders(currentApiBase()), []);
+  const hasRakazoHeaders = Object.keys(rakazoHeaders).length > 0;
+  const [useAccess, setUseAccess] = useState(
+    () => (saved?.accessHeaders?.length ?? 0) > 0 || (!saved && hasRakazoHeaders),
+  );
   const [selected, setSelected] = useState<string[]>(saved?.types ?? defaultSelection(types));
   const [status, setStatus] = useState<HealthSyncStatus | null>(() => health?.status() ?? null);
   const [progress, setProgress] = useState<HealthSyncProgress | null>(() => health?.progress?.() ?? null);
@@ -63,7 +72,10 @@ export default function HealthSync() {
     setError(null);
     try {
       await health!.requestAuthorization(selected);
-      await health!.configure(endpoint.trim(), token || null, selected);
+      if (useAccess && !hasRakazoHeaders) {
+        throw new Error("Rakazo 的 Server → Headers 里还没有访问凭据，先在那里填好");
+      }
+      await health!.configure(endpoint.trim(), token || null, selected, useAccess ? rakazoHeaders : {});
       setSaved(health!.getConfig());
       setToken("");
       setStatus(await health!.syncNow());
@@ -131,7 +143,10 @@ export default function HealthSync() {
         <SettingsRow accessibilityRole="button" title="立即同步" tinted disabled={busy || !saved} onPress={syncNow} />
       </SettingsGroup>
 
-      <SettingsGroup label="服务器" footer="Mac 上 tailscale serve 的 :8444 地址；token 存在钥匙串里，不会显示。">
+      <SettingsGroup
+        label="服务器"
+        footer="不挂 Tailscale：填 https://homelab.0458001.xyz/health，打开下面的「带上访问凭据」。挂着 Tailscale：填 Mac 的 :8444 地址。token 和凭据都存在钥匙串里，不会显示。"
+      >
         <TextInput
           accessibilityLabel="地址"
           autoCapitalize="none"
@@ -139,7 +154,7 @@ export default function HealthSync() {
           keyboardType="url"
           editable={!busy}
           onChangeText={setEndpoint}
-          placeholder="https://<主机>.<tailnet>.ts.net:8444"
+          placeholder="https://homelab.0458001.xyz/health"
           placeholderTextColor={native.tertiaryLabel}
           style={styles.input}
           value={endpoint}
@@ -155,6 +170,19 @@ export default function HealthSync() {
           secureTextEntry
           style={styles.input}
           value={token}
+        />
+        <SettingsSwitch
+          label="带上访问凭据（Cloudflare Access）"
+          detail={
+            hasRakazoHeaders
+              ? "用 Rakazo 服务器设置里的同一份 Headers"
+              : needsAccessHeaders(endpoint)
+                ? "先在 Rakazo 的 Server → Headers 里填好服务令牌"
+                : "Tailscale 地址不需要"
+          }
+          value={useAccess}
+          disabled={busy}
+          onChange={setUseAccess}
         />
       </SettingsGroup>
 

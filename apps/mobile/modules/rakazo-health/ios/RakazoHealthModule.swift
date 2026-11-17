@@ -27,7 +27,8 @@ public class RakazoHealthModule: Module {
 
     Function("getConfig") { () -> [String: Any]? in
       guard let c = HealthSyncEngine.shared.config else { return nil }
-      return ["endpoint": c.endpoint, "types": c.enabledTypes, "hasToken": HealthKeychain.read() != nil]
+      return ["endpoint": c.endpoint, "types": c.enabledTypes, "hasToken": HealthKeychain.read() != nil,
+              "accessHeaders": Array(HealthAccessHeaders.read().keys).sorted()]
     }
 
     Function("status") { () -> [String: Any] in Self.statusDict() }
@@ -54,12 +55,14 @@ public class RakazoHealthModule: Module {
       }
     }
 
-    /// Saves the endpoint, token (keychain; nil keeps the stored one) and types, then (re)starts observers.
-    AsyncFunction("configure") { (endpoint: String, token: String?, types: [String]) in
+    /// Saves the endpoint, token (keychain; nil keeps the stored one), extra headers (nil keeps, empty clears)
+    /// and types, then (re)starts observers.
+    AsyncFunction("configure") { (endpoint: String, token: String?, types: [String], headers: [String: String]?) in
       guard HealthSyncEngine.ingestURL(endpoint) != nil else {
         throw Exception(name: "E_HEALTH_ENDPOINT", description: "地址要是 https://…")
       }
       if let token, !token.isEmpty { HealthKeychain.write(token) }
+      if let headers { HealthAccessHeaders.write(headers) }
       HealthSyncEngine.shared.config = .init(endpoint: endpoint, enabledTypes: types)
       HealthSyncEngine.shared.start()
     }
@@ -68,6 +71,7 @@ public class RakazoHealthModule: Module {
       HealthSyncEngine.shared.stop()
       HealthSyncEngine.shared.config = nil
       HealthKeychain.write(nil)
+      HealthAccessHeaders.write(nil)
     }
 
     AsyncFunction("syncNow") { (promise: Promise) in

@@ -13,7 +13,13 @@ export type HealthTypeInfo = {
   available: boolean;
 };
 
-export type HealthSyncConfig = { endpoint: string; types: string[]; hasToken: boolean };
+export type HealthSyncConfig = {
+  endpoint: string;
+  types: string[];
+  hasToken: boolean;
+  /** Names of the extra headers saved for the ingest endpoint (Cloudflare Access). Missing on older builds. */
+  accessHeaders?: string[];
+};
 
 export type HealthSyncStatus = {
   lastSuccessAt?: number;
@@ -53,7 +59,13 @@ type HealthModule = {
   /** Missing on v1 builds. */
   progress?(): HealthSyncProgress;
   requestAuthorization(types: string[]): Promise<boolean>;
-  configure(endpoint: string, token: string | null, types: string[]): Promise<void>;
+  /** headers: null keeps the saved ones, {} clears them. */
+  configure(
+    endpoint: string,
+    token: string | null,
+    types: string[],
+    headers: Record<string, string> | null,
+  ): Promise<void>;
   disable(): Promise<void>;
   syncNow(): Promise<HealthSyncStatus>;
   resetAnchors(): Promise<void>;
@@ -80,17 +92,30 @@ export function defaultSelection(types: HealthTypeInfo[]): string[] {
   return types.filter((t) => t.available && !t.sensitive).map((t) => t.id);
 }
 
-/** The ingest endpoint has to be HTTPS (Tailscale serve gives the tailnet host a certificate). */
+/**
+ * The ingest endpoint has to be HTTPS: the Tailscale serve address (`https://<host>.<tailnet>.ts.net:8444`)
+ * or the public one behind Cloudflare Access (`https://homelab.0458001.xyz/health`, needs the access headers).
+ */
 export function endpointError(endpoint: string): string | null {
   let url: URL;
   try {
     url = new URL(endpoint.trim());
   } catch {
-    return "填完整地址，比如 https://mac.tailnet.ts.net:8444";
+    return "填完整地址，比如 https://homelab.0458001.xyz/health";
   }
-  if (url.protocol !== "https:") return "要用 https://（Tailscale 的地址自带证书）";
-  if (url.pathname !== "/" && url.pathname !== "") return "只填到端口，不要带路径";
+  if (url.protocol !== "https:") return "要用 https://";
+  if (url.search || url.hash) return "地址里不要带 ? 或 #";
+  if (/\/ingest(\/|$)/.test(url.pathname)) return "填到 /health 为止，/ingest/healthkit 会自动加";
   return null;
+}
+
+/** Tailscale addresses never need the Cloudflare Access headers. */
+export function needsAccessHeaders(endpoint: string): boolean {
+  try {
+    return !new URL(endpoint.trim()).hostname.endsWith(".ts.net");
+  } catch {
+    return false;
+  }
 }
 
 const count = (n: number) => Math.round(n).toLocaleString("en-US");
