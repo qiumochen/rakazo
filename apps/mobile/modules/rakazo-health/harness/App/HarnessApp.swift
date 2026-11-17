@@ -32,6 +32,19 @@ func run(_ args: [String]) async -> String {
       try await store.save(s)
       return "wrote:\(s.uuid.uuidString)"
     }
+    if let i = args.firstIndex(of: "--bulk"), let n = Int(args[i + 1]) {
+      // 一次写 n 条体重（每分钟一条，往回倒），验证大批量：分页、流水线、gzip、进度
+      let now = Date()
+      let samples = (0..<n).map { k -> HKQuantitySample in
+        let t = now.addingTimeInterval(-Double(k) * 60)
+        let q = HKQuantity(unit: .gramUnit(with: .kilo), doubleValue: 80 + Double(k % 100) / 100)
+        return HKQuantitySample(type: bodyMass, quantity: q, start: t, end: t, metadata: ["harness": "1", "bulk": "\(k)"])
+      }
+      for chunk in stride(from: 0, to: samples.count, by: 2000) {
+        try await store.save(Array(samples[chunk..<min(chunk + 2000, samples.count)]))
+      }
+      return "bulk:\(n)"
+    }
     if args.contains("--delete") {
       let pred = HKQuery.predicateForObjects(withMetadataKey: "harness")
       let n = try await withCheckedThrowingContinuation { (c: CheckedContinuation<Int, Error>) in
@@ -54,7 +67,9 @@ func run(_ args: [String]) async -> String {
       HealthSyncEngine.shared.config = .init(endpoint: args[i + 1], enabledTypes: [HKQuantityTypeIdentifier.bodyMass.rawValue])
       await withCheckedContinuation { c in HealthSyncEngine.shared.sync(reason: "harness") { c.resume() } }
       let s = HealthSyncEngine.shared.status
+      let p = HealthSyncEngine.shared.progress
       return "sync:uploaded=\(s.uploaded);error=\(s.lastError ?? "none");pending=\(s.pendingTypes.count)"
+        + ";run=\(p.uploaded);wire=\(p.wireBytes);raw=\(p.rawBytes);secs=\(String(format: "%.1f", s.lastRunSeconds ?? 0))"
     }
     return "idle"
   } catch {
