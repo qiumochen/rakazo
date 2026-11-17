@@ -1,0 +1,6 @@
+# xcodegen generate 生成的（project.yml 是源）
+HealthHarness.xcodeproj/
+App/Info.plist
+App/HealthHarness.entitlements
+# 验收时本机起的健康服务的数据
+hdata/
