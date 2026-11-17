@@ -57,7 +57,7 @@ describe("health sync", () => {
     const p = describeProgress(base, now);
     expect(p.title).toBe("正在同步：心率、步数（3/18 类）");
     expect(p.detail).toBe("本轮已传 108,000 条 · 每秒约 900 条 · 压缩到 10% · 已用 2 分钟");
-    expect(describeProgress({ ...base, activeTypes: [], doneTypes: 0, uploaded: 0, startedAt: now - 1000 }, now))
+    expect(describeProgress({ ...base, activeTypes: [], doneTypes: 0, uploaded: 0, wireBytes: 0, rawBytes: 0, startedAt: now - 1000 }, now))
       .toEqual({ title: "正在同步：准备（0/18 类）", detail: "本轮已传 0 条" });
   });
 
