@@ -1,3 +1,4 @@
+import Constants from "expo-constants";
 import type { Directory } from "expo-file-system";
 import { File, Paths } from "expo-file-system";
 import type { SharePayload } from "expo-sharing";
@@ -18,8 +19,11 @@ let pending: IncomingShare | null = null;
 let expiry: ReturnType<typeof setTimeout> | undefined;
 const listeners = new Set<() => void>();
 
-/** The app group in app.json where the iOS share extension copies shared files. */
-export const IOS_SHARE_APP_GROUP = "group.com.rakazo.app";
+/** The app group where the iOS share extension copies shared files: app.json's, or the self-signed
+ * build's own (app.config.ts sets extra.iosAppGroup when RAKAZO_IOS_BUNDLE_ID is given). */
+export const IOS_SHARE_APP_GROUP: string =
+  (typeof Constants.expoConfig?.extra?.iosAppGroup === "string" && Constants.expoConfig.extra.iosAppGroup) ||
+  "group.com.rakazo.app";
 
 /** Only iOS builds that include the share extension have its container. */
 function iosShareContainer(): Directory | null {

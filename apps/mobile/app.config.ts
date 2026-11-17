@@ -38,6 +38,19 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       },
     };
   }
+  if (ownBundleId) {
+    // App group ids are global: upstream's group.com.rakazo.app belongs to another team.
+    const appGroup = `group.${ownBundleId}`;
+    result = {
+      ...result,
+      plugins: (result.plugins ?? []).map((plugin) =>
+        Array.isArray(plugin) && plugin[0] === "expo-sharing"
+          ? [plugin[0], { ...plugin[1], ios: { ...plugin[1]?.ios, appGroupId: appGroup } }]
+          : plugin,
+      ),
+      extra: { ...result.extra, iosAppGroup: appGroup },
+    };
+  }
   const rpId = passkeyRpId(process.env.EXPO_PUBLIC_API_URL);
   if (rpId) {
     // Native passkeys only work for domains the binary is associated with, so the app reads the
