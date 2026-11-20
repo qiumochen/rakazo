@@ -102,4 +102,26 @@ describe("mobile app config", () => {
 
     expect(appConfig(context(config))).toBe(config);
   });
+
+  it("points push tokens and OTA updates at a self-hosted build's own Expo project", () => {
+    vi.stubEnv("RAKAZO_EXPO_PROJECT_ID", "own-project");
+    vi.stubEnv("RAKAZO_EXPO_OWNER", "own-owner");
+    const upstream: ExpoConfig = {
+      ...config,
+      owner: "upstream",
+      extra: { ...config.extra, eas: { projectId: "upstream-project", build: { keep: true } } },
+      updates: { url: "https://u.expo.dev/upstream-project", fallbackToCacheTimeout: 0 },
+    };
+
+    expect(appConfig(context(upstream))).toEqual({
+      ...upstream,
+      ...passkeys,
+      owner: "own-owner",
+      extra: {
+        ...passkeys.extra,
+        eas: { projectId: "own-project", build: { keep: true } },
+      },
+      updates: { url: "https://u.expo.dev/own-project", fallbackToCacheTimeout: 0 },
+    });
+  });
 });

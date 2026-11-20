@@ -51,6 +51,19 @@ export default ({ config }: ConfigContext): ExpoConfig => {
       extra: { ...result.extra, iosAppGroup: appGroup },
     };
   }
+  // homelab branch: push tokens and OTA updates belong to an Expo project. Upstream's project has
+  // no APNs key for our bundle id (Expo rejects every push with "Could not find APNs credentials")
+  // and serves upstream's JS, so self-built apps point both at their own project.
+  const ownProjectId = process.env.RAKAZO_EXPO_PROJECT_ID;
+  if (ownProjectId) {
+    const ownOwner = process.env.RAKAZO_EXPO_OWNER;
+    result = {
+      ...result,
+      ...(ownOwner ? { owner: ownOwner } : {}),
+      extra: { ...result.extra, eas: { ...result.extra?.eas, projectId: ownProjectId } },
+      updates: { ...result.updates, url: `https://u.expo.dev/${ownProjectId}` },
+    };
+  }
   const rpId = passkeyRpId(process.env.EXPO_PUBLIC_API_URL);
   if (rpId) {
     // Native passkeys only work for domains the binary is associated with, so the app reads the
