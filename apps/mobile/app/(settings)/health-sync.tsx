@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { Alert, ScrollView, StyleSheet, Text, TextInput } from "react-native";
-import { SettingsGroup, SettingsRow, SettingsSwitch } from "../../components/settings-group";
+import { SettingsGroup, SettingsRow, SettingsSwitch } from "../../components/settings/settings-group";
 import {
   defaultSelection,
   describeProgress,
@@ -14,11 +14,11 @@ import {
   type HealthSyncStatus,
   type HealthTypeInfo,
 } from "../../lib/health-sync";
-import { currentApiBase } from "../../lib/api";
-import { mobileTokens } from "../../lib/appearance";
-import { native, useThemedStyles } from "../../lib/native";
-import { serverHeaders } from "../../lib/server-headers";
-import { useSideInsets } from "../../lib/side-insets";
+import { currentApiBase } from "../../lib/api/api";
+import { mobileTokens } from "../../lib/appearance/appearance";
+import { native, useThemedStyles } from "../../lib/native/native";
+import { serverHeaders } from "../../lib/api/server-headers";
+import { useSideInsets } from "../../lib/layout/side-insets";
 
 /**
  * homelab branch: HealthKit → homelab health service. The phone pushes in the background

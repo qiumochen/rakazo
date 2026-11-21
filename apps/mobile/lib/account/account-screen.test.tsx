@@ -863,6 +863,8 @@ it.each([false, true])(
         "Models",
         "Approvals",
         "Vault",
+        // homelab branch: the HealthKit sync row (iOS only; this test mocks iOS)
+        "健康同步",
         "Computers",
         "Memory",
         "Voice",
